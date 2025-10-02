@@ -1,0 +1,312 @@
+# 火山引擎同声传译2.0-API接入文档
+发布时间：2025-07-29 11:39:59
+
+## 一、简介
+本文档介绍如何通过WebSocket协议实时访问同传大模型（AST）服务，核心包含**鉴权相关**、**协议详情**、**常见问题**和**使用Demo**四部分，支持以下核心能力：
+- 功能模式：s2s（Speech-to-Speech，语音转语音）、s2t（Speech-to-Text，语音转文本）
+- 特色能力：支持克隆说话人本身音色
+- 语言支持：中英互译
+
+AST服务接口地址：`wss://openspeech.bytedance.com/api/v4/ast/v2/translate`
+
+## 二、鉴权（非业务直接相关协议）
+在WebSocket建连的HTTP请求头（Header）中需添加以下鉴权信息，建连成功后服务端会返回指定响应头。
+
+### 2.1 建连HTTP请求头要求
+| 携带信息          | 对应的HTTP Header     | 填写的值说明                                                                 | 示例值               |
+|-------------------|-----------------------|------------------------------------------------------------------------------|----------------------|
+| X-Api-App-Key     | X-Api-App-Key         | 从火山引擎控制台获取的APP ID，参考「控制台使用FAQ-Q1」                        | 123456789            |
+| X-Api-Access-Key  | X-Api-Access-Key      | 从火山引擎控制台获取的Access Token，参考「控制台使用FAQ-Q1」                  | your-access-key      |
+| X-Api-Resource-Id | X-Api-Resource-Id     | 调用服务的固定资源ID                                                         | volc.service_type.10053 |
+
+### 2.2 建连成功响应头
+| Key          | 说明                                                                 | Value示例                                  |
+|--------------|----------------------------------------------------------------------|-------------------------------------------|
+| X-Tt-Logid    | 服务端返回的日志ID，建议用户获取并打印，用于后续定位问题               | 202407261553070FACFE6D19421815D605        |
+
+### 2.3 建连HTTP请求头示例
+```plain
+GET /api/v4/ast/v2/translate 
+Host: openspeech.bytedance.com
+X-Api-App-Key: 123456789
+X-Api-Access-Key: your-access-key
+X-Api-Resource-Id: volc.service_type.10053
+
+# 返回 Header
+X-Tt-Logid: 202407261553070FACFE6D19421815D605
+三、业务协议详情
+3.1 Protobuf
+AST 服务通过 Protobuf 定义二进制传输协议，需按以下步骤构建：
+下载压缩包：protos.tar.gz
+解压后参考压缩包内的HOWTO.md教程构建（该压缩包含 Go 语言示例教程）；
+若使用 Python/Java 语言，直接参考下方「Client Demo」中的打包教程。
+3.2 Client Demo（分语言下载）
+开发语言	Demo 下载链接	说明
+Go	ast_client.zip	Go 语言客户端示例
+Python	ast_python_client.zip	Python 语言客户端示例
+Java	ast_java_client.zip	Java 语言客户端示例
+四、交互流程（时序图）
+客户端（Client）与同传服务的交互需遵循固定流程，可通过以下 Mermaid 时序图 直观展示核心步骤：
+sequenceDiagram
+    participant Client as client
+    participant Service as 同传服务
+
+    Client->>Service: StartSession（带参数信息）
+    Service->>Client: SessionStarted
+    note left of Client: Client必须收到SessionStarted<br/>完成握手，才能继续发包
+    Client->>Service: TaskRequest（发送音频）
+    Client->>Service: TaskRequest（发送音频）
+    Service->>Client: SourceSubtitleStart
+    Service->>Client: SourceSubtitleResponse
+    Service->>Client: SourceSubtitleResponse
+    Service->>Client: SourceSubtitleEnd
+    Service->>Client: TranslationSubtitleStart
+    Service->>Client: TranslationSubtitleResponse
+    Service->>Client: TranslationSubtitleResponse
+    Service->>Client: TTSSentenceStart
+    Service->>Client: TTSSentenceResponse
+    Service->>Client: TTSSentenceResponse
+    Service->>Client: TranslationSubtitleEnd
+    Service->>Client: TTSSentenceEnd
+    Client->>Service: UpdateConfig（更新参数）
+    Client->>Service: FinishSession
+    Service->>Client: SessionFinished
+核心步骤文字说明：
+建连请求（StartSession）：客户端发送带参数的StartSession请求；
+建连确认（SessionStarted）：客户端必须收到服务端的SessionStarted响应，完成握手后才能继续发包；
+发送音频（TaskRequest）：客户端通过TaskRequest持续发送音频数据；
+字幕响应：服务端依次返回SourceSubtitle（原文字幕）、TranslationSubtitle（译文字幕）相关响应（Start/Response/End）；
+TTS 响应：服务端返回TTSSentence（TTS 语音）相关响应（Start/Response/End）；
+参数更新（可选）：客户端可通过UpdateConfig更新语料 / 干预词等参数；
+结束会话（FinishSession）：客户端发送FinishSession，服务端返回SessionFinished确认会话结束。
+五、WebSocket 二进制协议
+WebSocket 通过 Protobuf 传输二进制数据，核心包含「发送端 Event Type」「接收端 Event Type」「请求流程」「服务端响应」「错误码」五部分。
+5.1 发送端 Event Type（客户端→服务端）
+Event	取值	描述
+StartSession	100	建联请求（会话初始化）
+UpdateConfig	201	更新会话参数（如语料）
+TaskRequest	200	发送音频数据
+FinishSession	102	结束当前会话
+5.2 接收端 Event Type（服务端→客户端）
+Type	取值	描述
+SessionStarted	150	建联成功
+SourceSubtitleStart	650	原文字幕开始
+SourceSubtitleResponse	651	原文字幕数据
+SourceSubtitleEnd	652	原文字幕结束
+TranslationSubtitleStart	653	译文字幕开始
+TranslationSubtitleResponse	654	译文字幕数据
+TranslationSubtitleEnd	655	译文字幕结束
+TTSSentenceStart	350	TTS 语音开始
+TTSResponse	352	TTS 语音数据
+TTSSentenceEnd	351	TTS 语音结束
+UsageResponse	154	计量计费信息
+SessionFinished	152	会话正常结束
+SessionFailed	153	会话失败
+AudioMuted	250	静音事件（VAD 检测到静音）
+5.3 请求流程（客户端发送逻辑）
+5.3.1 建立连接 - StartSession
+WebSocket 建连后，客户端需发送第一个请求StartSession，携带会话初始化参数。
+参数字段说明
+一级字段	二级字段	三级字段	说明	层级	格式	是否必填	备注
+request_meta	-	-	请求元信息	1	dict	-	-
+-	session_id	-	会话 ID	-	string	✓	建议采用 UUID
+event	-	-	请求事件标识	1	enum(int32)	✓	建联请求固定为 100（StartSession）
+user	-	-	用户相关配置	1	dict	-	提供后可供服务端过滤日志
+-	uid	-	用户标识	2	string	-	建议采用 IMEI 或 MAC
+-	did	-	设备名称	2	string	-	-
+-	platform	-	操作系统及 API 版本号	2	string	-	示例：iOS/Android/Linux
+-	sdk_version	-	SDK 版本	2	string	-	-
+request	-	-	请求相关配置	1	dict	✓	-
+-	mode	-	功能模式	2	string	-	二选一：s2t（语音转文本）、s2s（语音转语音），控制是否需要输出语音
+-	source_language	-	源语言	2	-	-	可选值：zh（中文）、en（英文）；需与 target_language 不同
+-	target_language	-	目标语言	2	-	-	可选值：zh（中文）、en（英文）
+-	corpus	-	语料 / 干预词配置	2	-	-	自定义词典，热词 + 术语总数不超过 1000 个，否则报错
+-	-	hot_words_list	热词列表（原文识别用）	3	array of string	-	指导模型识别，不一定生效；示例：["视频直播","赛事直播"]
+-	-	glossary_list	术语列表（原文转译文用）	3	dict(string:string)	-	指导模型翻译，不一定生效；示例：{"人工智能":"Machine Learning"}
+source_audio	-	-	源音频配置	1	dict	✓	-
+-	format	-	音频容器格式	2	string	✓	仅支持 wav
+-	codec	-	音频编码格式	2	string	-	仅支持 raw（表示 PCM 编码）
+-	rate	-	音频采样率	2	int	-	必须为 16000
+-	bits	-	音频采样点位数	2	int	-	必须为 16
+-	channel	-	音频声道数	2	int	-	仅支持单声道（1），必须传 1
+target_audio	-	-	目标音频配置（仅 s2s 模式需填）	1	dict	见备注	s2s 时必填，s2t 时非必填
+-	format	-	目标音频容器格式	2	string	见备注	s2s 时必填；可选值：pcm/ogg_opus
+-	rate	-	目标音频采样率	2	int	见备注	s2s 时必填；默认 24000，支持 16000/24000
+参数示例
+json
+{
+  "request_meta": {
+      "session_id": "xxxxxxxx-xxxxxxxxxx-xxxxxxx-xxxxxxxxxx"
+  },
+  "event": "event.Type_StartSession",
+  "user": {
+    "uid": "388808088185088",
+    "did": "xxxxxx"
+  },
+  "source_audio": {
+    "format": "wav",
+    "rate": 16000,
+    "bits": 16,
+    "channel": 1
+  },
+  "target_audio": {
+    "format": "pcm",
+    "rate": 48000
+  },
+  "request": {
+    "mode": "s2s",
+    "source_language": "zh",
+    "target_language": "en",
+    "corpus": {
+      "hot_words_list": ["xxxxx","xxxxx"],
+      "glossary_list": {
+          "xxxxx": "yyy",
+          "zzzzz": "www"
+      }
+    }
+  }
+}
+5.3.2 发送音频数据 - TaskRequest
+客户端需在收到SessionStarted响应后，再发送TaskRequest携带音频数据，音频格式需与StartSession中指定的一致。
+参数字段说明
+字段	说明	层级	格式	是否必填	备注
+event	请求事件标识	1	enum(int32)	✓	固定为 200（TaskRequest）
+source_audio	源音频数据	1	dict	✓	-
+-	data	2	bytes	✓	音频流二进制数据；要求 16kHz、16bit、单声道（wav/pcm），建议 80ms 一包
+参数示例
+json
+{
+  "event": "event.Type_TaskRequest",
+  "source_audio": {
+    "data": "ff\xa2\xfe*\xfeB\xfe\xa3\xfe\x9c\xff\xe2\x0"
+  }
+}
+5.3.3 更新参数 - UpdateConfig
+用于在会话过程中更新语料 / 干预词等参数（如热词、术语）。
+参数示例
+json
+{
+  "event": "event.Type_ConfigUpdate",
+  "request": {
+    "mode": "s2s",
+    "source_language": "zh",
+    "target_language": "en",
+    "corpus": {    // 可选，可在会话中修改热词/术语
+      "hot_words_list": [],
+      "glossary_list": {}
+    }
+  }
+}
+5.3.4 结束会话 - FinishSession
+当所有音频数据发送完毕后，客户端发送FinishSession请求（不带音频数据），触发会话结束。
+参数示例
+json
+{
+  "event": "event.FinishSession"
+}
+5.4 服务端响应（服务端→客户端）
+客户端发送请求后，服务端会返回响应，核心字段说明如下，不同响应类型的示例见下文。
+服务端响应通用字段
+字段	说明	层级	格式	是否必填	备注
+response_meta	响应元信息	1	dict	-	-
+-	status_code	2	int	-	错误码（20000000 表示成功）
+-	message	2	string	-	错误信息（成功时为空）
+event	响应事件标识	1	int	-	如 150 表示建联成功（SessionStarted）
+text	音频识别结果文本	1	string	-	原文（SourceSubtitle）或译文（TranslationSubtitle）
+data	响应二进制数据	1	raw	-	如 TTS 语音数据（TTSResponse）
+start_time	起始时间	1	int	-	单位：毫秒；仅识别成功时填写
+end_time	结束时间	1	int	-	单位：毫秒；仅识别成功时填写
+muted_duration_ms	静音时长	-	int	-	单位：毫秒；存在误差，非精确值；仅 AudioMuted 事件返回
+各类型响应示例
+建联成功 - SessionStarted
+plain
+{
+  "event": "event.Type_SessionStarted"
+}
+原文字幕开始 - SourceSubtitleStart
+json
+{
+  "event": "event.Type_SourceSubtitleStart",
+  "start_time": xxx  // 起始时间（毫秒）
+}
+原文字幕数据 - SourceSubtitleResponse
+json
+{
+  "event": "event.Type_SourceSubtitleResponse",
+  "text": "xxx"   // 原文文本内容
+}
+原文字幕结束 - SourceSubtitleEnd
+json
+{
+  "event": "event.Type_SourceSubtitleEnd",
+  "start_time": xxx,  // 起始时间（毫秒）
+  "end_time": xxx,    // 结束时间（毫秒）
+  "text": "xxx"       // 完整原文文本
+}
+译文字幕开始 - TranslationSubtitleStart
+json
+{
+  "event": "event.Type_TranslationSubtitleStart",
+  "start_time": xxx  // 起始时间（毫秒）
+}
+译文字幕数据 - TranslationSubtitleResponse
+json
+{
+  "event": "event.Type_TranslationSubtitleResponse",
+  "text": "xxx"   // 译文文本内容
+}
+译文字幕结束 - TranslationSubtitleEnd
+json
+{
+  "event": "event.Type_TranslationSubtitleEnd",
+  "start_time": xxx,  // 起始时间（毫秒）
+  "end_time": xxx,    // 结束时间（毫秒）
+  "text": "xxx"       // 完整译文文本
+}
+TTS 语音开始 - TTSSentenceStart
+json
+{
+  "event": "event.Type_TTSSentenceStart",
+  "start_time": xxx  // 起始时间（毫秒）
+}
+TTS 语音数据 - TTSResponse
+json
+{
+  "event": "event.Type_TTSResponse",
+  "data": "xxx"  // TTS语音二进制数据（按target_audio格式返回）
+}
+TTS 语音结束 - TTSSentenceEnd
+json
+{
+  "event": "event.Type_TTSSentenceEnd",
+  "data": "xxx",      // 剩余TTS语音数据（若有）
+  "start_time": xxx,  // 起始时间（毫秒）
+  "end_time": xxx     // 结束时间（毫秒）
+}
+会话正常结束 - SessionFinished
+plain
+{
+  "event": "event.Type_SessionFinished"
+}
+会话失败 - SessionFailed
+plain
+{
+  "event": "event.Type_SessionFailed"
+}
+静音事件 - AudioMuted
+json
+{
+  "event": "event.Type_Type_AudioMuted",
+  "muted_duration_ms": xxx  // 静音时长（毫秒，非精确值）
+}
+说明：VAD 检测到静音时触发，第一次响应在静音 2 秒后，之后每静音约 1 秒返回一次。
+5.5 错误码说明
+当服务端遇到错误时，会通过response_meta.status_code返回错误码，核心错误码含义如下：
+错误码	含义	说明
+20000000	成功	请求正常处理完毕
+45000001	请求参数无效	请求缺失必需字段、字段值无效或存在重复请求
+45000002	空音频	客户端发送的音频数据为空
+45000081	等包超时	服务端等待客户端发送音频数据超时
+45000151	音频格式不正确	音频格式不符合要求（如采样率不是 16000、声道数非单声道等）
+550xxxxx	服务内部处理错误	服务端内部逻辑处理异常
+55000031	服务器繁忙	服务过载，暂时无法处理当前请求，建议稍后重试
